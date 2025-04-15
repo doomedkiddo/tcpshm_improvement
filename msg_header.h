@@ -25,26 +25,13 @@ SOFTWARE.
 #pragma once
 #include <cstdint>
 #include <cstring>
+#include <concepts>
+#include <bit>
 
 namespace tcpshm {
 
-// Detect system endianness
-#ifdef __BYTE_ORDER__
-  #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    static constexpr bool is_little_endian = true;
-  #else
-    static constexpr bool is_little_endian = false;
-  #endif
-#else
-  // Runtime detection as fallback
-  static const bool is_little_endian = []() {
-    union {
-        uint16_t i;
-        char c[2];
-    } u = {0x0102};
-    return u.c[0] == 2;
-  }();
-#endif
+// Detect system endianness using C++20 <bit> header
+static constexpr bool is_little_endian = std::endian::native == std::endian::little;
 
 // Endianness handling class
 template<bool ToLittle>
@@ -52,48 +39,43 @@ class Endian {
 public:
   static constexpr bool IsLittle = is_little_endian;
 
-  // Unsigned integer conversions
-  static uint16_t Convert(uint16_t v) {
-    if (ToLittle == IsLittle) return v;
-    return bswap16(v);
+  // Unsigned integer conversions with concepts
+  template<std::unsigned_integral T>
+  static T Convert(T v) {
+    if constexpr (ToLittle == IsLittle) 
+      return v;
+    else if constexpr (sizeof(T) == 2)
+      return bswap16(v);
+    else if constexpr (sizeof(T) == 4)
+      return bswap32(v);
+    else if constexpr (sizeof(T) == 8)
+      return bswap64(v);
+    else
+      return v; // For other sizes, no conversion
   }
   
-  static uint32_t Convert(uint32_t v) {
-    if (ToLittle == IsLittle) return v;
-    return bswap32(v);
+  // Signed integer conversions with concepts
+  template<std::signed_integral T>
+  static T Convert(T v) {
+    return static_cast<T>(Convert(static_cast<std::make_unsigned_t<T>>(v)));
   }
   
-  static uint64_t Convert(uint64_t v) {
-    if (ToLittle == IsLittle) return v;
-    return bswap64(v);
-  }
-  
-  // Signed integer conversions
-  static int16_t Convert(int16_t v) {
-    return static_cast<int16_t>(Convert(static_cast<uint16_t>(v)));
-  }
-  
-  static int32_t Convert(int32_t v) {
-    return static_cast<int32_t>(Convert(static_cast<uint32_t>(v)));
-  }
-  
-  static int64_t Convert(int64_t v) {
-    return static_cast<int64_t>(Convert(static_cast<uint64_t>(v)));
-  }
-  
-  // Floating point conversions
-  static float Convert(float v) {
-    union { float f; uint32_t i; } u;
-    u.f = v;
-    u.i = Convert(u.i);
-    return u.f;
-  }
-  
-  static double Convert(double v) {
-    union { double d; uint64_t i; } u;
-    u.d = v;
-    u.i = Convert(u.i);
-    return u.d;
+  // Floating point conversions with concepts
+  template<std::floating_point T>
+  static T Convert(T v) {
+    if constexpr (sizeof(T) == 4) {
+      union { float f; uint32_t i; } u{.f = v};
+      u.i = Convert(u.i);
+      return u.f;
+    }
+    else if constexpr (sizeof(T) == 8) {
+      union { double d; uint64_t i; } u{.d = v};
+      u.i = Convert(u.i);
+      return u.d;
+    }
+    else {
+      return v; // For other sizes, no conversion
+    }
   }
   
   // In-place conversion template
@@ -104,18 +86,18 @@ public:
 
 private:
   // Byte swap functions
-  static uint16_t bswap16(uint16_t x) {
+  static constexpr uint16_t bswap16(uint16_t x) {
     return ((x & 0x00FFU) << 8) | ((x & 0xFF00U) >> 8);
   }
 
-  static uint32_t bswap32(uint32_t x) {
+  static constexpr uint32_t bswap32(uint32_t x) {
     return ((x & 0x000000FFU) << 24) | 
            ((x & 0x0000FF00U) << 8)  | 
            ((x & 0x00FF0000U) >> 8)  | 
            ((x & 0xFF000000U) >> 24);
   }
 
-  static uint64_t bswap64(uint64_t x) {
+  static constexpr uint64_t bswap64(uint64_t x) {
     return ((x & 0x00000000000000FFULL) << 56) |
            ((x & 0x000000000000FF00ULL) << 40) |
            ((x & 0x0000000000FF0000ULL) << 24) |

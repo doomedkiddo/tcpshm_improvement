@@ -9,15 +9,15 @@ using namespace tcpshm;
 
 struct ClientConf : public CommonConf
 {
-  static const int64_t NanoInSecond = 1000000000LL;
+  static constexpr int64_t NanoInSecond = 1000000000LL;
 
-  static const uint32_t TcpQueueSize = 2000;       // must be a multiple of 8
-  static const uint32_t TcpRecvBufInitSize = 1000; // must be a multiple of 8
-  static const uint32_t TcpRecvBufMaxSize = 2000;  // must be a multiple of 8
-  static const bool TcpNoDelay = true;
+  static constexpr uint32_t TcpQueueSize = 2000;       // must be a multiple of 8
+  static constexpr uint32_t TcpRecvBufInitSize = 1000; // must be a multiple of 8
+  static constexpr uint32_t TcpRecvBufMaxSize = 2000;  // must be a multiple of 8
+  static constexpr bool TcpNoDelay = true;
 
-  static const int64_t ConnectionTimeout = 10 * NanoInSecond;
-  static const int64_t HeartBeatInverval = 3 * NanoInSecond;
+  static constexpr int64_t ConnectionTimeout = 10 * NanoInSecond;
+  static constexpr int64_t HeartBeatInverval = 3 * NanoInSecond;
 
   using ConnectionUserData = char;
 };
@@ -31,7 +31,7 @@ public:
     EchoClient(const std::string& ptcp_dir, const std::string& name)
         : TSClient(ptcp_dir, name)
         , conn(GetConnection()) {
-        srand(time(NULL));
+        srand(time(nullptr));
     }
 
     void Run(bool use_shm, const char* server_ipv4, uint16_t server_port) {
@@ -84,7 +84,7 @@ public:
         uint64_t latency = stop_time - start_time;
         Stop();
         cout << "client stopped, send_num: " << *send_num << " recv_num: " << *recv_num << " latency: " << latency
-             << " avg rtt: " << (msg_sent > 0 ? (double)latency / msg_sent : 0.0) << " ns" << endl;
+             << " avg rtt: " << (msg_sent > 0 ? static_cast<double>(latency) / msg_sent : 0.0) << " ns" << endl;
     }
 
 private:
@@ -92,14 +92,9 @@ private:
         if(*send_num < MaxNum) {
             // for slow mode, we wait to recv an echo msg before sending the next one
             if(slow && *send_num != *recv_num) return false;
-            // we randomly send one of the 4 msgs
-            int tp = rand() % 4 + 1;
-            switch(tp) {
-                case 1: TrySendMsg<Msg1>(); break;
-                case 2: TrySendMsg<Msg2>(); break;
-                case 3: TrySendMsg<Msg3>(); break;
-                case 4: TrySendMsg<Msg4>(); break;
-            }
+            
+            // Send market depth data to test latency
+            TrySendMarketDepthMsg();
         }
         else {
             // if all echo msgs are got, we are done
@@ -108,12 +103,34 @@ private:
         return false;
     }
 
+    bool TrySendMarketDepthMsg() {
+        MsgHeader* header = conn.Alloc(sizeof(MarketDepthMsg));
+        if(!header) return false;
+        header->msg_type = MarketDepthMsg::msg_type;
+        MarketDepthMsg* msg = reinterpret_cast<MarketDepthMsg*>(header + 1);
+        
+        // Fill with test data
+        msg->instrument_id = (*send_num)++;
+        
+        // Generate some test prices and sizes for 5 levels
+        for(int i = 0; i < 5; i++) {
+            msg->bid[i].price = 100.0 - i * 0.1;
+            msg->bid[i].size = 100 + i * 10;
+            msg->ask[i].price = 100.1 + i * 0.1;
+            msg->ask[i].size = 100 + i * 10;
+        }
+        
+        conn.Push();
+        msg_sent++;
+        return true;
+    }
+
     template<class T>
     bool TrySendMsg() {
         MsgHeader* header = conn.Alloc(sizeof(T));
         if(!header) return false;
         header->msg_type = T::msg_type;
-        T* msg = (T*)(header + 1);
+        T* msg = reinterpret_cast<T*>(header + 1);
         for(auto& v : msg->val) {
             // convert to configurated network byte order, don't need this if you know server is using the same endian
             v = Endian<ClientConf::ToLittleEndian>::Convert((*send_num)++);
@@ -121,6 +138,17 @@ private:
         conn.Push();
         msg_sent++;
         return true;
+    }
+
+    void handleMarketDepthMsg(MarketDepthMsg* msg) {
+        int v = msg->instrument_id;
+        // convert from configurated network byte order if needed
+        // Endian<ClientConf::ToLittleEndian>::ConvertInPlace(v);
+        if(v != *recv_num) {
+            cout << "bad: v: " << v << " recv_num: " << (*recv_num) << endl;
+            exit(1);
+        }
+        (*recv_num)++;
     }
 
     template<class T>
@@ -175,10 +203,11 @@ private:
     void OnServerMsg(MsgHeader* header) {
         // auto msg_type = header->msg_type;
         switch(header->msg_type) {
-            case 1: handleMsg((Msg1*)(header + 1)); break;
-            case 2: handleMsg((Msg2*)(header + 1)); break;
-            case 3: handleMsg((Msg3*)(header + 1)); break;
-            case 4: handleMsg((Msg4*)(header + 1)); break;
+            case 1: handleMsg(reinterpret_cast<Msg1*>(header + 1)); break;
+            case 2: handleMsg(reinterpret_cast<Msg2*>(header + 1)); break;
+            case 3: handleMsg(reinterpret_cast<Msg3*>(header + 1)); break;
+            case 4: handleMsg(reinterpret_cast<Msg4*>(header + 1)); break;
+            case 5: handleMarketDepthMsg(reinterpret_cast<MarketDepthMsg*>(header + 1)); break;
             default: assert(false);
         }
         conn.Pop();
@@ -190,13 +219,13 @@ private:
     }
 
 private:
-    static const int MaxNum = 10000000;
+    static constexpr int MaxNum = 10000000;
     Connection& conn;
     int msg_sent = 0;
     uint64_t start_time = 0;
     uint64_t stop_time = 0;
     // set slow to false to send msgs as fast as it can
-    bool slow = true;
+    bool slow = false;
     // set do_cpupin to true to get more stable latency
     bool do_cpupin = true;
     int* send_num;

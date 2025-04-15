@@ -1,9 +1,15 @@
 cmake_minimum_required(VERSION 3.10)
 project(tcpshm_test CXX)
 
-# Set C++ standard
+# Set C++20 standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Enforce C++20 with compiler flags
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-std=c++20)
+endif()
 
 # Add optimization flags for Release build
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")

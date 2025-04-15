@@ -28,10 +28,12 @@ SOFTWARE.
 #include <sys/mman.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <concepts>
+#include <string_view>
 
 namespace tcpshm {
 
-template<class T>
+template<typename T>
 T* my_mmap(const char* filename, bool use_shm, const char** error_msg) {
     int fd = -1;
     if(use_shm) {
@@ -49,7 +51,7 @@ T* my_mmap(const char* filename, bool use_shm, const char** error_msg) {
         close(fd);
         return nullptr;
     }
-    T* ret = (T*)mmap(0, sizeof(T), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    T* ret = static_cast<T*>(mmap(nullptr, sizeof(T), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
     close(fd);
     if(ret == MAP_FAILED) {
         *error_msg = "mmap";
@@ -58,7 +60,7 @@ T* my_mmap(const char* filename, bool use_shm, const char** error_msg) {
     return ret;
 }
 
-template<class T>
+template<typename T>
 void my_munmap(void* addr) {
     munmap(addr, sizeof(T));
 }

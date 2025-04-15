@@ -1,0 +1,36 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Project: High-Performance C++ Backend Service
+# Tech Stack: C++17/20, RDMA, Boost, EASTL
+
+## Core Principles
+- Prioritize zero-copy data patterns
+- Optimize for NUMA-aware memory access
+- Eliminate virtual function overhead
+- Maximize SIMD utilization
+- Implement deterministic memory management
+
+## Memory Management
+1. **Pool Allocation Strategy**
+   - Use custom memory pools for critical paths
+   - Prefer stack allocation with `alloca()` when possible
+   - Implement slab allocators for frequent object types
+   - Disable shared_ptr reference counting via `#define _LIBCPP_NO_RTTI`
+
+2. **Object Lifetime**
+   - Use move semantics rigorously (`std::move`, `std::forward`)
+   - Prefer `explicit` constructors to prevent accidental copies
+   - Implement CRTP-based polymorphism instead of virtual functions
+
+## Compiler Optimizations
+3. **Template Metaprogramming**
+   ```cpp
+   // Use static polymorphism patterns
+   template<typename Derived>
+   class Base {
+     public:
+       void interface() { static_cast<Derived*>(this)->impl(); }
+   };

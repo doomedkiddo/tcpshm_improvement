@@ -1,39 +1,17 @@
-/*
-MIT License
-
-Copyright (c) 2018 Meng Rao <raomeng1@gmail.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-*/
-
 #pragma once
 #include "ptcp_queue.h"
 #include "mmap.h"
 #include <memory>
 #include <sys/uio.h>
+#include <span>
+#include <concepts>
 
 namespace tcpshm {
 
 // HeartbeatMsg is special that it only has MsgHeader
 struct HeartbeatMsg
 {
-    static const uint16_t msg_type = 0;
+    static constexpr uint16_t msg_type = 0;
 };
 
 // Note that we allow user to reuse msg_type 1 and 2
@@ -41,7 +19,7 @@ struct HeartbeatMsg
 template<class Conf>
 struct LoginMsgTpl
 {
-    static const uint16_t msg_type = 1;
+    static constexpr uint16_t msg_type = 1;
     uint32_t client_seq_start;
     uint32_t client_seq_end;
     // user can put more information in user_data for auth, such as username, password...
@@ -62,7 +40,7 @@ struct LoginMsgTpl
 template<class Conf>
 struct LoginRspMsgTpl
 {
-    static const uint16_t msg_type = 2;
+    static constexpr uint16_t msg_type = 2;
     uint32_t server_seq_start;
     uint32_t server_seq_end;
     typename Conf::LoginRspUserData user_data;
@@ -129,7 +107,7 @@ public:
         }
         if(recvbuf_size_ == 0) {
             recvbuf_size_ = Conf::TcpRecvBufInitSize;
-            recvbuf_.reset(new char[recvbuf_size_]);
+            recvbuf_ = std::make_unique<char[]>(recvbuf_size_);
         }
     }
 
@@ -153,7 +131,7 @@ public:
             return nullptr;
         }
         while(nextmsg_idx_ != readidx_) {
-            MsgHeader* header = (MsgHeader*)&recvbuf_[readidx_];
+            MsgHeader* header = reinterpret_cast<MsgHeader*>(&recvbuf_[readidx_]);
             if(header->msg_type == HeartbeatMsg::msg_type) {
                 readidx_ += sizeof(MsgHeader);
                 continue;
@@ -168,8 +146,8 @@ public:
             int old_writeidx = writeidx_;
             writeidx_ += len;
             while(writeidx_ - nextmsg_idx_ >= 8) {
-                MsgHeader* header = (MsgHeader*)&recvbuf_[nextmsg_idx_];
-                if(old_writeidx - (int)nextmsg_idx_ < 8) { // we haven't converted this header
+                MsgHeader* header = reinterpret_cast<MsgHeader*>(&recvbuf_[nextmsg_idx_]);
+                if(old_writeidx - static_cast<int>(nextmsg_idx_) < 8) { // we haven't converted this header
                     header->ConvertByteOrder<Conf::ToLittleEndian>();
                 }
                 q_->Ack(header->ack_seq);
@@ -187,14 +165,14 @@ public:
             }
         }
         if(readidx_ != nextmsg_idx_) {
-            return (MsgHeader*)&recvbuf_[readidx_];
+            return reinterpret_cast<MsgHeader*>(&recvbuf_[readidx_]);
         }
         return nullptr;
     }
 
     // we have consumed the msg we got from Front()
     void Pop() {
-        MsgHeader* header = (MsgHeader*)&recvbuf_[readidx_];
+        MsgHeader* header = reinterpret_cast<MsgHeader*>(&recvbuf_[readidx_]);
         readidx_ += (header->size + 7) & -8;
         q_->MyAck()++;
     }
@@ -220,7 +198,7 @@ public:
     bool SendPending() {
         if(IsClosed()) return false;
         int blk_sz;
-        const char* p = (char*)q_->GetSendable(blk_sz);
+        const char* p = static_cast<const char*>(q_->GetSendable(blk_sz));
         if(blk_sz == 0) return false;
         uint32_t size = blk_sz << 3;
         do {
@@ -244,7 +222,7 @@ public:
         return true;
     }
 
-    bool IsClosed() {
+    [[nodiscard]] bool IsClosed() const {
         return sockfd_ < 0;
     }
 
@@ -258,7 +236,7 @@ public:
         return false;
     }
 
-    const char* GetCloseReason(int* sys_errno) {
+    [[nodiscard]] const char* GetCloseReason(int* sys_errno) const {
         *sys_errno = close_errno_;
         return close_reason_;
     }
@@ -267,7 +245,7 @@ public:
         Close("Request close", 0);
     }
 
-    bool UseShm() {
+    [[nodiscard]] bool UseShm() const {
         return q_ == nullptr;
     }
 
@@ -290,7 +268,7 @@ private:
         // we should avoid buffer expansion
         // if total writable size is less than a half of recvbuf_size_, allow buffer expansion
         bool allow_expand = (writable + readidx_) * 2 < recvbuf_size_;
-        uint32_t extra_size = std::min((uint32_t)sizeof(stackbuf),
+        uint32_t extra_size = std::min(static_cast<uint32_t>(sizeof(stackbuf)),
                                        readidx_ + (allow_expand ? Conf::TcpRecvBufMaxSize - recvbuf_size_ : 0));
         if(writable + extra_size == 0) return 0;
         int ret;
@@ -324,8 +302,8 @@ private:
         recv_time_ = now_;
         if(ret <= writable) return ret;
         if(ret <= writable + readidx_) { // need to memmove
-            memmove(&recvbuf_[0], &recvbuf_[readidx_], recvbuf_size_ - readidx_);
-            memcpy(&recvbuf_[recvbuf_size_ - readidx_], stackbuf, ret - writable);
+            std::memmove(&recvbuf_[0], &recvbuf_[readidx_], recvbuf_size_ - readidx_);
+            std::memcpy(&recvbuf_[recvbuf_size_ - readidx_], stackbuf, ret - writable);
         }
         else { // need to expand buffer
             // newbufsize must be large enough to hold all data just read
@@ -333,9 +311,9 @@ private:
             uint32_t newbufsize =
                 std::min(Conf::TcpRecvBufMaxSize, std::max(recvbuf_size_ * 2, (writeidx_ - readidx_ + ret + 7) & -8));
             // std::cout << "expand: " << recvbuf_size_ << " -> " << newbufsize << std::endl;
-            std::unique_ptr<char[]> new_buf(new char[newbufsize]);
-            memcpy(&new_buf[0], &recvbuf_[readidx_], recvbuf_size_ - readidx_);
-            memcpy(&new_buf[recvbuf_size_ - readidx_], stackbuf, ret - writable);
+            auto new_buf = std::make_unique<char[]>(newbufsize);
+            std::memcpy(&new_buf[0], &recvbuf_[readidx_], recvbuf_size_ - readidx_);
+            std::memcpy(&new_buf[recvbuf_size_ - readidx_], stackbuf, ret - writable);
             recvbuf_size_ = newbufsize;
             std::swap(recvbuf_, new_buf);
         }

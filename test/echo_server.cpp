@@ -3,6 +3,7 @@
 #include "timestamp.h"
 #include "common.h"
 #include "cpupin.h"
+#include <atomic>
 
 using namespace std;
 using namespace tcpshm;
@@ -10,24 +11,24 @@ using namespace tcpshm;
 
 struct ServerConf : public CommonConf
 {
-  static const int64_t NanoInSecond = 1000000000LL;
+  static constexpr int64_t NanoInSecond = 1000000000LL;
 
-  static const uint32_t MaxNewConnections = 5;
-  static const uint32_t MaxShmConnsPerGrp = 4;
-  static const uint32_t MaxShmGrps = 1;
-  static const uint32_t MaxTcpConnsPerGrp = 4;
-  static const uint32_t MaxTcpGrps = 1;
+  static constexpr uint32_t MaxNewConnections = 5;
+  static constexpr uint32_t MaxShmConnsPerGrp = 4;
+  static constexpr uint32_t MaxShmGrps = 1;
+  static constexpr uint32_t MaxTcpConnsPerGrp = 4;
+  static constexpr uint32_t MaxTcpGrps = 1;
 
   // echo server's TcpQueueSize should be larger than that of client if client is in fast mode
   // otherwise server's send queue could be blocked and ack_seq can only be sent through HB which is slow
-  static const uint32_t TcpQueueSize = 3000;       // must be a multiple of 8
-  static const uint32_t TcpRecvBufInitSize = 1000; // must be a multiple of 8
-  static const uint32_t TcpRecvBufMaxSize = 2000;  // must be a multiple of 8
-  static const bool TcpNoDelay = true;
+  static constexpr uint32_t TcpQueueSize = 4000;       // must be a multiple of 8
+  static constexpr uint32_t TcpRecvBufInitSize = 1000; // must be a multiple of 8
+  static constexpr uint32_t TcpRecvBufMaxSize = 2000;  // must be a multiple of 8
+  static constexpr bool TcpNoDelay = true;
 
-  static const int64_t NewConnectionTimeout = 3 * NanoInSecond;
-  static const int64_t ConnectionTimeout = 10 * NanoInSecond;
-  static const int64_t HeartBeatInverval = 3 * NanoInSecond;
+  static constexpr int64_t NewConnectionTimeout = 3 * NanoInSecond;
+  static constexpr int64_t ConnectionTimeout = 10 * NanoInSecond;
+  static constexpr int64_t HeartBeatInverval = 3 * NanoInSecond;
 
   using ConnectionUserData = char;
 };
@@ -42,7 +43,7 @@ public:
         : TSServer(ptcp_dir, name) {
         // capture SIGTERM to gracefully stop the server
         // we can also send other signals to crash the server and see how it recovers on restart
-        signal(SIGTERM, EchoServer::SignalHandler);
+        std::signal(SIGTERM, EchoServer::SignalHandler);
     }
 
     static void SignalHandler(int s) {
@@ -90,7 +91,7 @@ private:
     // called with Start()
     // reporting errors on Starting the server
     void OnSystemError(const char* errno_msg, int sys_errno) {
-        cout << "System Error: " << errno_msg << " syserrno: " << strerror(sys_errno) << endl;
+        cout << "System Error: " << errno_msg << " syserrno: " << std::strerror(sys_errno) << endl;
     }
 
     // called by CTL thread
@@ -100,15 +101,15 @@ private:
     // so we have to wait OnClientLogon for confirmation
     int OnNewConnection(const struct sockaddr_in& addr, const LoginMsg* login, LoginRspMsg* login_rsp) {
         cout << "New Connection from: " << inet_ntoa(addr.sin_addr) << ":" << ntohs(addr.sin_port)
-             << ", name: " << login->client_name << ", use_shm: " << (bool)login->use_shm << endl;
+             << ", name: " << login->client_name << ", use_shm: " << static_cast<bool>(login->use_shm) << endl;
         // here we simply hash client name to uniformly map to each group
-        auto hh = hash<string>{}(string(login->client_name));
+        auto hh = std::hash<std::string>{}(std::string(login->client_name));
         if(login->use_shm) {
             if(ServerConf::MaxShmGrps > 0) {
                 return hh % ServerConf::MaxShmGrps;
             }
             else {
-                strcpy(login_rsp->error_msg, "Shm disabled");
+                std::strcpy(login_rsp->error_msg, "Shm disabled");
                 return -1;
             }
         }
@@ -117,7 +118,7 @@ private:
                 return hh % ServerConf::MaxTcpGrps;
             }
             else {
-                strcpy(login_rsp->error_msg, "Tcp disabled");
+                std::strcpy(login_rsp->error_msg, "Tcp disabled");
                 return -1;
             }
         }
@@ -127,7 +128,7 @@ private:
     // ptcp or shm files can't be open or are corrupt
     void OnClientFileError(Connection& conn, const char* reason, int sys_errno) {
         cout << "Client file errno, name: " << conn.GetRemoteName() << " reason: " << reason
-             << " syserrno: " << strerror(sys_errno) << endl;
+             << " syserrno: " << std::strerror(sys_errno) << endl;
     }
 
     // called by CTL thread
@@ -156,7 +157,7 @@ private:
     // client is disconnected
     void OnClientDisconnected(Connection& conn, const char* reason, int sys_errno) {
         cout << "Client disconnected,.name: " << conn.GetRemoteName() << " reason: " << reason
-             << " syserrno: " << strerror(sys_errno) << endl;
+             << " syserrno: " << std::strerror(sys_errno) << endl;
     }
 
     // called by APP thread
@@ -165,21 +166,18 @@ private:
         MsgHeader* send_header = conn.Alloc(size);
         if(!send_header) return;
         send_header->msg_type = recv_header->msg_type;
-        memcpy(send_header + 1, recv_header + 1, size);
+        std::memcpy(send_header + 1, recv_header + 1, size);
         // if we call Push() before Pop(), there's a good chance Pop() is not called in case of program crash
         conn.Pop();
         conn.Push();
     }
 
-    static volatile bool stopped;
+    static inline std::atomic<bool> stopped{false};
     // set do_cpupin to true to get more stable latency
     bool do_cpupin = true;
 };
 
-volatile bool EchoServer::stopped = false;
-
 int main() {
-
     EchoServer server("server", "server");
     server.Run("0.0.0.0", 12345);
 
