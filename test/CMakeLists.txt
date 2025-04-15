@@ -13,8 +13,8 @@ add_compile_definitions(__BEGIN_DECLS="#define DO_NOTHING")
 add_compile_definitions(__END_DECLS="#define DO_NOTHING")
 
 # Add executable targets
-add_executable(echo_server echo_server.cc)
-add_executable(echo_client echo_client.cc)
+add_executable(echo_server echo_server.cpp)
+add_executable(echo_client echo_client.cpp)
 
 # Link libraries
 target_link_libraries(echo_server PRIVATE pthread rt)
