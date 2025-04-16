@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(tcpshm_test CXX)
 
+find_package(spdlog REQUIRED)
 # Set C++20 standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -23,8 +24,8 @@ add_executable(echo_server echo_server.cpp)
 add_executable(echo_client echo_client.cpp)
 
 # Link libraries
-target_link_libraries(echo_server PRIVATE pthread rt)
-target_link_libraries(echo_client PRIVATE pthread rt)
+target_link_libraries(echo_server PRIVATE pthread rt spdlog::spdlog)
+target_link_libraries(echo_client PRIVATE pthread rt spdlog::spdlog)
 
 # Include directories
 include_directories(..)

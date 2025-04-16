@@ -5,10 +5,22 @@
 #include "cpupin.h"
 #include <atomic>
 #include <random>
+#include <sstream>
+#include <iomanip>
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 using namespace std;
 using namespace tcpshm;
 
+// Helper function for string formatting
+template<typename... Args>
+std::string format_string(const std::string& format, Args... args) {
+    size_t size = snprintf(nullptr, 0, format.c_str(), args...) + 1;
+    std::unique_ptr<char[]> buf(new char[size]);
+    snprintf(buf.get(), size, format.c_str(), args...);
+    return std::string(buf.get(), buf.get() + size - 1);
+}
 
 struct ServerConf : public CommonConf
 {
@@ -48,6 +60,10 @@ public:
         
         // Initialize random generator
         rng.seed(std::random_device()());
+        
+        // Initialize spdlog
+        logger = spdlog::stdout_color_mt("server");
+        logger->set_level(spdlog::level::info);
     }
 
     static void SignalHandler(int s) {
@@ -86,7 +102,7 @@ public:
             thr.join();
         }
         Stop();
-        cout << "Server stopped" << endl;
+        logger->info("Server stopped");
     }
 
 private:
@@ -95,7 +111,7 @@ private:
     // called with Start()
     // reporting errors on Starting the server
     void OnSystemError(const char* errno_msg, int sys_errno) {
-        cout << "System Error: " << errno_msg << " syserrno: " << std::strerror(sys_errno) << endl;
+        logger->error("System Error: {} syserrno: {}", errno_msg, std::strerror(sys_errno));
     }
 
     // called by CTL thread
@@ -104,8 +120,10 @@ private:
     // Note that even if we accept it here, there could be other errors on handling the login,
     // so we have to wait OnClientLogon for confirmation
     int OnNewConnection(const struct sockaddr_in& addr, const LoginMsg* login, LoginRspMsg* login_rsp) {
-        cout << "New Connection from: " << inet_ntoa(addr.sin_addr) << ":" << ntohs(addr.sin_port)
-             << ", name: " << login->client_name << ", use_shm: " << static_cast<bool>(login->use_shm) << endl;
+        logger->info("New Connection from: {}:{}, name: {}, use_shm: {}", 
+            inet_ntoa(addr.sin_addr), ntohs(addr.sin_port), 
+            login->client_name, static_cast<bool>(login->use_shm));
+            
         // here we simply hash client name to uniformly map to each group
         auto hh = std::hash<std::string>{}(std::string(login->client_name));
         if(login->use_shm) {
@@ -131,8 +149,8 @@ private:
     // called by CTL thread
     // ptcp or shm files can't be open or are corrupt
     void OnClientFileError(Connection& conn, const char* reason, int sys_errno) {
-        cout << "Client file errno, name: " << conn.GetRemoteName() << " reason: " << reason
-             << " syserrno: " << std::strerror(sys_errno) << endl;
+        logger->error("Client file errno, name: {} reason: {} syserrno: {}", 
+            conn.GetRemoteName(), reason, std::strerror(sys_errno));
     }
 
     // called by CTL thread
@@ -144,24 +162,24 @@ private:
                              uint32_t remote_ack_seq,
                              uint32_t remote_seq_start,
                              uint32_t remote_seq_end) {
-        cout << "Client seq number mismatch, name: " << conn.GetRemoteName() << " ptcp file: " << conn.GetPtcpFile()
-             << " local_ack_seq: " << local_ack_seq << " local_seq_start: " << local_seq_start
-             << " local_seq_end: " << local_seq_end << " remote_ack_seq: " << remote_ack_seq
-             << " remote_seq_start: " << remote_seq_start << " remote_seq_end: " << remote_seq_end << endl;
+        logger->warn("Client seq number mismatch, name: {} ptcp file: {} local_ack_seq: {} local_seq_start: {} "
+             "local_seq_end: {} remote_ack_seq: {} remote_seq_start: {} remote_seq_end: {}", 
+             conn.GetRemoteName(), conn.GetPtcpFile(), local_ack_seq, local_seq_start, local_seq_end, 
+             remote_ack_seq, remote_seq_start, remote_seq_end);
     }
 
     // called by CTL thread
     // confirmation for client logon
     void OnClientLogon(const struct sockaddr_in& addr, Connection& conn) {
-        cout << "Client Logon from: " << inet_ntoa(addr.sin_addr) << ":" << ntohs(addr.sin_port)
-             << ", name: " << conn.GetRemoteName() << endl;
+        logger->info("Client Logon from: {}:{}, name: {}", 
+            inet_ntoa(addr.sin_addr), ntohs(addr.sin_port), conn.GetRemoteName());
     }
 
     // called by CTL thread
     // client is disconnected
     void OnClientDisconnected(Connection& conn, const char* reason, int sys_errno) {
-        cout << "Client disconnected,.name: " << conn.GetRemoteName() << " reason: " << reason
-             << " syserrno: " << std::strerror(sys_errno) << endl;
+        logger->info("Client disconnected, name: {} reason: {} syserrno: {}", 
+            conn.GetRemoteName(), reason, std::strerror(sys_errno));
     }
 
     // called by APP thread
@@ -174,6 +192,10 @@ private:
             // For all market data messages
             void* msg_body = recv_header + 1;
             instrument_id = *reinterpret_cast<int*>(msg_body);
+            
+            // 在接收到请求时打印请求信息
+            std::string symbol = GetSymbolName(instrument_id);
+            logger->info("收到请求 - 类型: {}, 币对: {} (ID: {})", msg_type, symbol, instrument_id);
         }
         
         // Respond with the appropriate market data message
@@ -255,6 +277,13 @@ private:
             msg->ask[i].size = 100 + i * 10 + RandomSize();
         }
         
+        // Generate symbol name (e.g., BTC-USDT, ETH-USDT, etc.)
+        std::string symbol = GetSymbolName(msg->instrument_id);
+        
+        // Print the data being sent
+        logger->info("发送市场深度数据 - 币对: {} (ID: {}) 最优买价: {:.2f} 最优卖价: {:.2f}", 
+            symbol, msg->instrument_id, msg->bid[0].price, msg->ask[0].price);
+        
         conn.Push();
     }
     
@@ -278,6 +307,13 @@ private:
         msg->is_buy = (RandomSize() % 2 == 0);
         msg->timestamp = now();
         
+        // Generate symbol name
+        std::string symbol = GetSymbolName(msg->instrument_id);
+        
+        // Print the data being sent
+        logger->info("发送成交数据 - 币对: {} (ID: {}) 价格: {:.2f} 数量: {} 方向: {}", 
+            symbol, msg->instrument_id, msg->price, msg->size, msg->is_buy ? "买入" : "卖出");
+        
         conn.Push();
     }
     
@@ -296,6 +332,13 @@ private:
         msg->historical_volatility = 0.18 + (msg->instrument_id % 8) * 0.01 + RandomOffset() * 0.1;
         msg->realized_volatility = 0.19 + (msg->instrument_id % 9) * 0.01 + RandomOffset() * 0.1;
         msg->timestamp = now();
+        
+        // Generate symbol name
+        std::string symbol = GetSymbolName(msg->instrument_id);
+        
+        // Print the data being sent
+        logger->info("发送波动率数据 - 币对: {} (ID: {}) 隐含波动率: {:.4f} 历史波动率: {:.4f} 实际波动率: {:.4f}", 
+            symbol, msg->instrument_id, msg->implied_volatility, msg->historical_volatility, msg->realized_volatility);
         
         conn.Push();
     }
@@ -325,6 +368,26 @@ private:
         msg->volume = 1000 + RandomSize() * 10;
         msg->timestamp = now();
         
+        // Map period enum to string for display
+        std::string period_str;
+        switch(msg->period) {
+            case KLineMsg::MIN_1: period_str = "1分钟"; break;
+            case KLineMsg::MIN_5: period_str = "5分钟"; break;
+            case KLineMsg::MIN_15: period_str = "15分钟"; break;
+            case KLineMsg::MIN_30: period_str = "30分钟"; break;
+            case KLineMsg::HOUR_1: period_str = "1小时"; break;
+            case KLineMsg::HOUR_4: period_str = "4小时"; break;
+            case KLineMsg::DAY_1: period_str = "1天"; break;
+            case KLineMsg::WEEK_1: period_str = "1周"; break;
+        }
+        
+        // Generate symbol name
+        std::string symbol = GetSymbolName(msg->instrument_id);
+        
+        // Print the data being sent
+        logger->info("发送K线数据 - 币对: {} (ID: {}) 周期: {} 开: {:.2f} 高: {:.2f} 低: {:.2f} 收: {:.2f} 量: {}", 
+            symbol, msg->instrument_id, period_str, msg->open, msg->high, msg->low, msg->close, msg->volume);
+        
         conn.Push();
     }
     
@@ -350,6 +413,14 @@ private:
         msg->daily_volume = 10000 + RandomSize() * 100;
         msg->timestamp = now();
         
+        // Generate symbol name
+        std::string symbol = GetSymbolName(msg->instrument_id);
+        
+        // Print the data being sent
+        logger->info("发送行情数据 - 币对: {} (ID: {}) 最新价: {:.2f} 涨跌幅: {:.2f}% 高: {:.2f} 低: {:.2f} 量: {}", 
+            symbol, msg->instrument_id, msg->last_price, msg->daily_percent_change, 
+            msg->daily_high, msg->daily_low, msg->daily_volume);
+        
         conn.Push();
     }
     
@@ -365,6 +436,25 @@ private:
         return dist(rng);
     }
 
+    // Helper function to generate a symbol name based on instrument_id
+    std::string GetSymbolName(int instrument_id) {
+        // Common cryptocurrency symbols
+        static const std::vector<std::string> base_currencies = {
+            "BTC", "ETH", "BNB", "XRP", "ADA", "SOL", "DOT", "DOGE", "AVAX", "MATIC",
+            "LINK", "UNI", "ATOM", "LTC", "FTM", "ALGO", "XLM", "VET", "AXS", "FIL"
+        };
+        
+        // Common quote currencies
+        static const std::vector<std::string> quote_currencies = {
+            "USDT", "USDC", "BUSD", "DAI", "USD", "EUR"
+        };
+        
+        int base_idx = instrument_id % base_currencies.size();
+        int quote_idx = (instrument_id / base_currencies.size()) % quote_currencies.size();
+        
+        return base_currencies[base_idx] + "-" + quote_currencies[quote_idx];
+    }
+
     static inline std::atomic<bool> stopped{false};
     // set do_cpupin to true to get more stable latency
     bool do_cpupin = true;
@@ -372,6 +462,7 @@ private:
     // For generating random market data
     std::mt19937 rng;
     std::atomic<int> last_trade_id{0};
+    std::shared_ptr<spdlog::logger> logger;
 };
 
 int main() {
