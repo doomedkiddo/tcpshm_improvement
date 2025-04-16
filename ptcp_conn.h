@@ -84,7 +84,7 @@ public:
     }
 
     void Reset() {
-        memset(q_, 0, sizeof(PTCPQ));
+        new (q_) PTCPQ();  // Use placement new instead of memset
     }
 
     void Release() {
@@ -152,11 +152,11 @@ public:
                 }
                 q_->Ack(header->ack_seq);
                 int msg_size = (header->size + 7) & -8;
-                if(msg_size > Conf::TcpRecvBufMaxSize) {
+                if(static_cast<uint32_t>(msg_size) > Conf::TcpRecvBufMaxSize) {
                     Close("Msg size larger than recv buf max size", 0);
                     return nullptr;
                 }
-                if(writeidx_ - nextmsg_idx_ < msg_size) break;
+                if(writeidx_ - nextmsg_idx_ < static_cast<uint32_t>(msg_size)) break;
                 // we have got a full msg
                 if(header->msg_type == HeartbeatMsg::msg_type && readidx_ == nextmsg_idx_) {
                     readidx_ += msg_size;
@@ -300,8 +300,8 @@ private:
             return 0;
         }
         recv_time_ = now_;
-        if(ret <= writable) return ret;
-        if(ret <= writable + readidx_) { // need to memmove
+        if(static_cast<uint32_t>(ret) <= writable) return ret;
+        if(static_cast<uint32_t>(ret) <= writable + readidx_) { // need to memmove
             std::memmove(&recvbuf_[0], &recvbuf_[readidx_], recvbuf_size_ - readidx_);
             std::memcpy(&recvbuf_[recvbuf_size_ - readidx_], stackbuf, ret - writable);
         }

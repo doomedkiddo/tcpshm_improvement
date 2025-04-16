@@ -1,8 +1,8 @@
 tcpshm
 ======
 
-## MsgHeader and TcpShmConnection
-Every msg has a `MsgHeader` automatically appended, regardless of control msg or app msg, it's a 8 byte structure in host endian:
+## 消息头和TCP共享内存连接
+每个消息都会自动添加一个`MsgHeader`（消息头），无论是控制消息还是应用消息，它都是一个8字节的结构体，使用主机字节序：
 
 ```c++
 struct MsgHeader
@@ -16,11 +16,11 @@ struct MsgHeader
     uint32_t ack_seq;
 };
 ```
-The framework will apply endian conversion on MsgHeader automatically(check ToLittleEndian below) if sending over tcp channel.
+如果通过TCP通道发送，框架会自动对MsgHeader进行字节序转换（参见下面的ToLittleEndian配置）。
 
-TcpShmConnection is a general connection class that we can use to send or recv msgs.
-**Note that reading/writing msgs on one connection must happen in the same thread: its polling thread(see [Limitations](https://github.com/MengRao/tcpshm#limitations)).**
-For sending, user calls Alloc() to allocate space to save a msg:
+TcpShmConnection是一个通用的连接类，我们可以用它来发送或接收消息。
+**注意：在同一个连接上读写消息必须在同一个线程中进行：即它的轮询线程（参见[限制](https://github.com/MengRao/tcpshm#limitations)）。**
+对于发送，用户调用Alloc()来分配空间保存消息：
 
 ```c++
     // allocate a msg of specified size in send queue
@@ -29,8 +29,8 @@ For sending, user calls Alloc() to allocate space to save a msg:
     MsgHeader* Alloc(uint16_t size);
 ```
 
-In the returned `MsgHeader` pointer, user need to set msg_type field and the msg content(it's user's responsibility to take care of the endian for msg content) after the header, then call Push() to submit and send out the msg.
-If user have multiple msgs to send in a row, it's better to use PushMore() for first several msgs and Push() for the last one:
+在返回的`MsgHeader`指针中，用户需要设置msg_type字段以及头部后面的消息内容（消息内容的字节序处理是用户自己的责任），然后调用Push()提交并发送消息。
+如果用户需要连续发送多个消息，最好为前几个消息使用PushMore()，为最后一个消息使用Push()：
 ```c++
     // submit the last msg from Alloc() and send out
     void Push();
@@ -40,7 +40,7 @@ If user have multiple msgs to send in a row, it's better to use PushMore() for f
     void PushMore();
 ```
 
-For receiving, user calls Front() to get the first app msg in receive queue, but normally Front() should be automatically called by framework in polling functions:
+对于接收，用户调用Front()获取接收队列中的第一个应用消息，但通常情况下，Front()应该由框架在轮询函数中自动调用：
 ```c++
     // get the next msg from recv queue, return nullptr if queue is empty
     // the returned address is guaranteed to be 8 byte aligned
@@ -48,26 +48,26 @@ For receiving, user calls Front() to get the first app msg in receive queue, but
     // user dont need to call Front() directly as polling functions will do it
     MsgHeader* Front();
 ```
-If returned `MsgHeader` is not nullptr, user can identify basic msg info from its msg_type and size and handle msg content after `MsgHeader`.
-If user finishes handling the msg, it should call Pop() to consume it, otherwise user will get the same msg again from the next Front():
+如果返回的`MsgHeader`不是nullptr，用户可以从它的msg_type和size识别基本的消息信息，并处理`MsgHeader`后面的消息内容。
+如果用户完成了消息处理，应该调用Pop()来消费它，否则用户将在下一次Front()中再次获得相同的消息：
 ```c++
     // consume the msg we got from Front() or polling function
     void Pop();
 ```
 
-In a typical scenario that on handling a msg, user wants to send back a response msg immediately, he should call Pop() and Push() in a row instead of the reverse, in that:
-1) for tcp, Push() will send to the network which would be slow, so if we do the reverse there's a chance that when program crashes the Pushed msg is persisted in sending queue but Pop() is not called, so on recovery it'll handle the same msg again and push a duplicate response. If we do Pop() and Push() there's still a chance that Pop() succeeds but Push() doesn't(miss sending a response), but that's only a theoretical chance, you can test the EchoServer example.  
-2) for tcp, if we call Pop() and Push(), the updated ack seq(due to Pop()) will be piggybacked by the response msg(due to Push()), which means the remote side will get the update more quickly.
+在一个典型的场景中，当处理一个消息时，用户想要立即发送回一个响应消息，应该按顺序调用Pop()和Push()而不是相反的顺序，原因是：
+1) 对于TCP，Push()会发送到网络，这会比较慢，所以如果我们按相反顺序操作，当程序崩溃时，已提交的消息可能保存在发送队列中而Pop()未被调用，那么在恢复时它将再次处理相同的消息并推送一个重复的响应。如果我们按Pop()和Push()的顺序，仍然有一种可能性是Pop()成功但Push()失败（错过发送响应），但这只是一个理论上的可能性，您可以测试EchoServer示例。  
+2) 对于TCP，如果我们调用Pop()和Push()，更新的确认序列号（由于Pop()）将会被响应消息（由于Push()）捎带，这意味着远程端将更快地获得更新。
 
-User can close the connection and the remote side will get the disconnect notification.
+用户可以关闭连接，远程端将收到断开连接的通知。
 ```c++
     // Close this connection
     void Close();
 ```
 
-In application, user is not allowed to create TcpShmConnection but can get a reference to it from client or server framework, and this reference is guaranteed to be valid until server/client is stopped, this allows user to send msgs even when it's disconnected, and remote side will get them once connection is re-established. 
+在应用程序中，用户不允许创建TcpShmConnection，但可以从客户端或服务器框架获取对它的引用，这个引用保证在服务器/客户端停止之前一直有效，这允许用户即使在断开连接的情况下仍然可以发送消息，远程端将在重新建立连接后收到它们。
 
-Connection related configuration are as below:
+连接相关的配置如下：
 ```c++
 struct Conf
 {
@@ -110,8 +110,8 @@ struct Conf
 ```
 
 
-## Client Side
-tcpshm_client.h defines template Class `TcpShmClient`, user need to defines a new Class that derives from `TcpShmClient` and provides a configuration template class, and also a client name and ptcp folder name for TcpShmClient's constructor. The client name is used combined with server name to uniquely identify a connection, and the ptcp folder is used by the framework to persist some internal files including the tcp queue file.
+## 客户端部分
+tcpshm_client.h定义了模板类`TcpShmClient`，用户需要定义一个新的派生自`TcpShmClient`的类，并提供一个配置模板类，以及为TcpShmClient的构造函数提供客户端名称和ptcp文件夹名称。客户端名称与服务器名称结合使用来唯一标识一个连接，ptcp文件夹由框架用来持久化一些内部文件，包括tcp队列文件。
 
 ```c++
 #include "tcpshm/tcpshm_client.h"
@@ -133,7 +133,7 @@ public:
 ...
 ```
 
-Then user can call Connect() to login to the server:
+然后用户可以调用Connect()登录到服务器：
 
 ```c++
     // connect and login to server, may block for a short time
@@ -145,14 +145,14 @@ Then user can call Connect() to login to the server:
                 );
 ```
 
-If Login successful, user can get the Connection reference to send msgs:
+如果登录成功，用户可以获取连接引用来发送消息：
 
 ```c++
     // get the connection reference which can be kept by user as long as TcpShmClient is not destructed
     Connection& GetConnection();
 ```
 
-For receiving msgs and keeping the connection alive, user needs to frequenctly poll the client. For tcp mode user calls PollTcp(); For shm mode user calls both PollTcp() and PollShm(), from the same or different thread, using seperate thread has the advantage that app msg latency will be lower.
+为了接收消息并保持连接活跃，用户需要频繁地轮询客户端。对于TCP模式，用户调用PollTcp()；对于共享内存模式，用户需要同时调用PollTcp()和PollShm()，可以从同一个线程或不同的线程调用，使用单独的线程有应用消息延迟更低的优势。
 
 ```c++
     // we need to PollTcp even if using shm
@@ -163,13 +163,13 @@ For receiving msgs and keeping the connection alive, user needs to frequenctly p
     void PollShm();
 ```
 
-To stop the client, just call Stop()
+要停止客户端，只需调用Stop()
 ```c++
     // stop the connection and close files
     void Stop();
 ```
 
-Also, user needs to define a collection of callback functions for framework to invoke:
+此外，用户需要定义一系列框架将调用的回调函数：
 ```c++
     // called within Connect()
     // reporting errors on connecting to the server
@@ -202,8 +202,8 @@ Also, user needs to define a collection of callback functions for framework to i
     void OnDisconnected(const char* reason, int sys_errno);
 ```
 
-## Server Side
-tcpshm_server.h defines template Class `TcpShmServer`, same as `TcpShmClient`, user need to defines a new Class that derives from `TcpShmServer` and provides a configuration template class, and also a server name and ptcp folder name for TcpShmServer's constructor:
+## 服务器部分
+tcpshm_server.h定义了模板类`TcpShmServer`，与`TcpShmClient`类似，用户需要定义一个新的派生自`TcpShmServer`的类，并提供一个配置模板类，以及为TcpShmServer的构造函数提供服务器名称和ptcp文件夹名称：
 ```c++
 #include "tcpshm/tcpshm_server.h"
 
@@ -243,7 +243,7 @@ public:
         : TSServer(ptcp_dir, name) 
 ...
 ```
-User starts and stops the server by Start() and Stop():
+用户通过Start()和Stop()启动和停止服务器：
 ```c++
     // start the server
     // return true if success
@@ -252,11 +252,11 @@ User starts and stops the server by Start() and Stop():
     void Stop();
 ```
 
-One important feature of the server is it allows user to customize their threading model. 
-The max number of threads it supports is MaxShmGrps + MaxTcpGrps + 1(for control thread), in this case, each group is served by a seperate thread.
-To the opposite extreme, user can have only one thread serving all.
-This logic is controlled by how user calls polling functions in his thread(s).
-Server has 3 polling functions, and they can be called from the same or different threads: 
+服务器的一个重要特性是它允许用户自定义他们的线程模型。
+它支持的最大线程数是MaxShmGrps + MaxTcpGrps + 1(用于控制线程)，在这种情况下，每个组由一个单独的线程服务。
+在另一个极端情况下，用户可以只使用一个线程服务所有内容。
+这个逻辑由用户如何在他的线程中调用轮询函数来控制。
+服务器有3个轮询函数，它们可以从同一个或不同的线程调用：
 ```c++
     // poll control for handling new connections and keep shm connections alive
     void PollCtl(int64_t now);
@@ -268,7 +268,7 @@ Server has 3 polling functions, and they can be called from the same or differen
     void PollShm(int grpid);
 ```
 
-Also, user needs to define a collection of callback functions for framework to invoke:
+此外，用户需要定义一系列框架将调用的回调函数：
 ```c++
     // called with Start()
     // reporting errors on Starting the server

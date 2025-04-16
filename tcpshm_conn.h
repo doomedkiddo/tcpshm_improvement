@@ -127,8 +127,8 @@ private:
 
     void Reset() {
         if(shm_sendq_) {
-            memset(shm_sendq_, 0, sizeof(SHMQ));
-            memset(shm_recvq_, 0, sizeof(SHMQ));
+            new (shm_sendq_) SHMQ();
+            new (shm_recvq_) SHMQ();
         }
         else {
             ptcp_conn_.Reset();

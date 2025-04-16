@@ -42,7 +42,7 @@ protected:
             return false;
         }
         conn_.TryCloseFd();
-        const char* error_msg;
+        const char* error_msg = "Unknown error";
         if(!server_name_) {
             std::string last_server_name_file = std::string(ptcp_dir_) + "/" + client_name_ + ".lastserver";
             server_name_ = (char*)my_mmap<ServerName>(last_server_name_file.c_str(), false, &error_msg);
@@ -50,15 +50,18 @@ protected:
                 static_cast<Derived*>(this)->OnSystemError(error_msg, errno);
                 return false;
             }
-            strncpy(conn_.GetRemoteName(), server_name_, sizeof(ServerName));
+            strncpy(conn_.GetRemoteName(), server_name_, sizeof(ServerName) - 1);
+            conn_.GetRemoteName()[sizeof(ServerName) - 1] = '\0';
         }
         MsgHeader sendbuf[1 + (sizeof(LoginMsg) + 7) / 8];
         sendbuf[0].size = sizeof(MsgHeader) + sizeof(LoginMsg);
         sendbuf[0].msg_type = LoginMsg::msg_type;
         sendbuf[0].ack_seq = 0;
         LoginMsg* login = (LoginMsg*)(sendbuf + 1);
-        strncpy(login->client_name, client_name_, sizeof(login->client_name));
-        strncpy(login->last_server_name, server_name_, sizeof(login->last_server_name));
+        strncpy(login->client_name, client_name_, sizeof(login->client_name) - 1);
+        login->client_name[sizeof(login->client_name) - 1] = '\0';
+        strncpy(login->last_server_name, server_name_, sizeof(login->last_server_name) - 1);
+        login->last_server_name[sizeof(login->last_server_name) - 1] = '\0';
         login->use_shm = use_shm;
         login->client_seq_start = login->client_seq_end = 0;
         login->user_data = login_user_data;
@@ -154,7 +157,8 @@ protected:
         if(strncmp(server_name_, login_rsp->server_name, sizeof(ServerName)) != 0) {
             conn_.Release();
             strncpy(server_name_, login_rsp->server_name, sizeof(ServerName));
-            strncpy(conn_.GetRemoteName(), server_name_, sizeof(ServerName));
+            strncpy(conn_.GetRemoteName(), server_name_, sizeof(ServerName) - 1);
+            conn_.GetRemoteName()[sizeof(ServerName) - 1] = '\0';
             if(!conn_.OpenFile(use_shm, &error_msg)) {
                 static_cast<Derived*>(this)->OnSystemError(error_msg, errno);
                 close(fd);
