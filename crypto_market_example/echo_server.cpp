@@ -9,6 +9,10 @@
 #include <iomanip>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <thread>
+#include <chrono>
+#include <map>
+#include <mutex>
 
 using namespace std;
 using namespace tcpshm;
@@ -64,6 +68,11 @@ public:
         // Initialize spdlog
         logger = spdlog::stdout_color_mt("server");
         logger->set_level(spdlog::level::info);
+        
+        // 初始化数据发送计数器
+        for (int i = 0; i < 5; i++) {
+            msg_send_count[i+5] = 0;
+        }
     }
 
     static void SignalHandler(int s) {
@@ -92,6 +101,12 @@ public:
             }
           });
         }
+        
+        // 创建一个线程定期主动发送市场数据
+        threads.emplace_back([this]() {
+            if (do_cpupin) cpupin(4 + ServerConf::MaxTcpGrps + ServerConf::MaxShmGrps);
+            SendMarketDataPeriodically();
+        });
 
         // polling control using this thread
         while(!stopped) {
@@ -102,7 +117,71 @@ public:
             thr.join();
         }
         Stop();
-        logger->info("Server stopped");
+        
+        // 输出发送统计信息
+        logger->info("服务器已停止, 发送统计:");
+        for (const auto& [type, count] : msg_send_count) {
+            std::string type_name;
+            switch(type) {
+                case 5: type_name = "市场深度数据"; break;
+                case 6: type_name = "成交数据"; break;
+                case 7: type_name = "波动率数据"; break;
+                case 8: type_name = "K线数据"; break;
+                case 9: type_name = "行情数据"; break;
+                default: type_name = "未知类型";
+            }
+            logger->info("{}: 发送 {} 条", type_name, count);
+        }
+        
+        logger->info("服务器已停止");
+    }
+    
+    // 定期发送市场数据的线程函数
+    void SendMarketDataPeriodically() {
+        logger->info("市场数据发送线程已启动");
+        
+        // 限制发送的总消息数量
+        constexpr int max_msgs_to_send = 10000;
+        int total_sent = 0;
+        
+        while (!stopped && total_sent < max_msgs_to_send) {
+            // 获取所有连接
+            std::vector<Connection*> connections;
+            {
+                std::lock_guard<std::mutex> lock(connections_mutex);
+                connections = active_connections;
+            }
+            
+            if (connections.empty()) {
+                // 没有活跃连接，等待一段时间再继续尝试
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                continue;
+            }
+            
+            for (auto& conn : connections) {
+                if (conn->IsClosed()) continue;
+                
+                // 随机选择一种市场数据类型发送
+                int msg_type = 5 + (total_sent % 5); // 循环发送5种类型的数据
+                int instrument_id = total_sent % 120; // 循环120个币对
+                
+                switch(msg_type) {
+                    case 5: SendMarketDepthMsg(*conn, instrument_id); break;
+                    case 6: SendTradeMsg(*conn, instrument_id); break;
+                    case 7: SendVolatilityMsg(*conn, instrument_id); break;
+                    case 8: SendKLineMsg(*conn, instrument_id); break;
+                    case 9: SendTickerMsg(*conn, instrument_id); break;
+                }
+                
+                total_sent++;
+                if (total_sent >= max_msgs_to_send) break;
+            }
+            
+            // 控制发送频率
+            // std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        
+        logger->info("市场数据发送线程已完成，总共发送 {} 条消息", total_sent);
     }
 
 private:
@@ -173,6 +252,10 @@ private:
     void OnClientLogon(const struct sockaddr_in& addr, Connection& conn) {
         logger->info("Client Logon from: {}:{}, name: {}", 
             inet_ntoa(addr.sin_addr), ntohs(addr.sin_port), conn.GetRemoteName());
+        
+        // 将新连接加入活跃连接列表
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        active_connections.push_back(&conn);
     }
 
     // called by CTL thread
@@ -180,6 +263,13 @@ private:
     void OnClientDisconnected(Connection& conn, const char* reason, int sys_errno) {
         logger->info("Client disconnected, name: {} reason: {} syserrno: {}", 
             conn.GetRemoteName(), reason, std::strerror(sys_errno));
+        
+        // 从活跃连接列表中移除
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        auto it = std::find(active_connections.begin(), active_connections.end(), &conn);
+        if (it != active_connections.end()) {
+            active_connections.erase(it);
+        }
     }
 
     // called by APP thread
@@ -198,62 +288,8 @@ private:
             logger->info("收到请求 - 类型: {}, 币对: {} (ID: {})", msg_type, symbol, instrument_id);
         }
         
-        // Respond with the appropriate market data message
-        switch (msg_type) {
-            case 1:
-            case 2:
-            case 3:
-            case 4:
-            {
-                // Handle legacy message types (1-4)
-                auto size = recv_header->size - sizeof(MsgHeader);
-                MsgHeader* send_header = conn.Alloc(size);
-                if(!send_header) return;
-                send_header->msg_type = recv_header->msg_type;
-                std::memcpy(send_header + 1, recv_header + 1, size);
-                conn.Pop();
-                conn.Push();
-                break;
-            }
-                
-            case 5: // Market Depth
-                SendMarketDepthMsg(conn, instrument_id);
-                conn.Pop();
-                break;
-                
-            case 6: // Trade
-                SendTradeMsg(conn, instrument_id);
-                conn.Pop();
-                break;
-                
-            case 7: // Volatility
-                SendVolatilityMsg(conn, instrument_id);
-                conn.Pop();
-                break;
-                
-            case 8: // K-Line
-                SendKLineMsg(conn, instrument_id);
-                conn.Pop();
-                break;
-                
-            case 9: // Ticker
-                SendTickerMsg(conn, instrument_id);
-                conn.Pop();
-                break;
-                
-            default:
-            {
-                // Unknown message type, just echo it back
-                auto size = recv_header->size - sizeof(MsgHeader);
-                MsgHeader* send_header = conn.Alloc(size);
-                if(!send_header) return;
-                send_header->msg_type = recv_header->msg_type;
-                std::memcpy(send_header + 1, recv_header + 1, size);
-                conn.Pop();
-                conn.Push();
-                break;
-            }
-        }
+        // 现在我们只接收消息，不再响应请求
+        conn.Pop();
     }
     
     void SendMarketDepthMsg(Connection& conn, int instrument_id) {
@@ -285,6 +321,7 @@ private:
             symbol, msg->instrument_id, msg->bid[0].price, msg->ask[0].price);
         
         conn.Push();
+        msg_send_count[header->msg_type]++;
     }
     
     void SendTradeMsg(Connection& conn, int instrument_id) {
@@ -315,6 +352,7 @@ private:
             symbol, msg->instrument_id, msg->price, msg->size, msg->is_buy ? "买入" : "卖出");
         
         conn.Push();
+        msg_send_count[header->msg_type]++;
     }
     
     void SendVolatilityMsg(Connection& conn, int instrument_id) {
@@ -341,6 +379,7 @@ private:
             symbol, msg->instrument_id, msg->implied_volatility, msg->historical_volatility, msg->realized_volatility);
         
         conn.Push();
+        msg_send_count[header->msg_type]++;
     }
     
     void SendKLineMsg(Connection& conn, int instrument_id) {
@@ -389,6 +428,7 @@ private:
             symbol, msg->instrument_id, period_str, msg->open, msg->high, msg->low, msg->close, msg->volume);
         
         conn.Push();
+        msg_send_count[header->msg_type]++;
     }
     
     void SendTickerMsg(Connection& conn, int instrument_id) {
@@ -422,6 +462,7 @@ private:
             msg->daily_high, msg->daily_low, msg->daily_volume);
         
         conn.Push();
+        msg_send_count[header->msg_type]++;
     }
     
     // Helper function to generate small random price offsets
@@ -463,6 +504,13 @@ private:
     std::mt19937 rng;
     std::atomic<int> last_trade_id{0};
     std::shared_ptr<spdlog::logger> logger;
+    
+    // 活跃连接列表和互斥锁
+    std::vector<Connection*> active_connections;
+    std::mutex connections_mutex;
+    
+    // 发送统计
+    std::map<int, int> msg_send_count;
 };
 
 int main() {

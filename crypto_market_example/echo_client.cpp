@@ -168,156 +168,25 @@ public:
 
 private:
     bool PollNum() {
-        if(*send_num < MaxNum) {
-            // for slow mode, we wait to recv an echo msg before sending the next one
-            if(slow && *send_num != *recv_num) return false;
-            
-            // Send a market data request based on the current message count
-            int msg_type = 5 + (*send_num % 5); // Cycle through message types 5-9
-            int instrument_id = *send_num % 120; // Cycle through 120 instruments
-            
-            switch(msg_type) {
-                case 5: TrySendMarketDepthRequest(instrument_id); break;
-                case 6: TrySendTradeRequest(instrument_id); break;
-                case 7: TrySendVolatilityRequest(instrument_id); break;
-                case 8: TrySendKLineRequest(instrument_id); break;
-                case 9: TrySendTickerRequest(instrument_id); break;
-                default: break;
-            }
-            
-            // 添加短暂延迟，以便能看到输出
-            // std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-        else {
-            // if all echo msgs are got, we are done
-            if(*send_num == *recv_num) return true;
+        // 不再主动发送请求，只需检查是否达到接收上限
+        if(*recv_num >= MaxNum) {
+            logger->info("已到达接收上限 ({} 条消息)，准备关闭连接", MaxNum);
+            return true;
         }
         return false;
     }
     
-    bool TrySendMarketDepthRequest(int instrument_id) {
-        MsgHeader* header = conn.Alloc(sizeof(int));
-        if(!header) return false;
-        header->msg_type = MarketDepthMsg::msg_type;
-        int* id = reinterpret_cast<int*>(header + 1);
-        *id = instrument_id;
-        (*send_num)++;
-        
-        // Get symbol name
-        std::string symbol = GetSymbolName(instrument_id);
-        
-        // 记录发送时间
-        uint64_t send_time = now();
-        msg_sent_time[*send_num] = {header->msg_type, send_time};
-        
-        logger->info("发送市场深度请求 - 币对: {} (ID: {}), 请求次数: {}/{}", 
-            symbol, instrument_id, *send_num, MaxNum);
-        conn.Push();
-        msg_sent++;
-        return true;
-    }
-    
-    bool TrySendTradeRequest(int instrument_id) {
-        MsgHeader* header = conn.Alloc(sizeof(int));
-        if(!header) return false;
-        header->msg_type = TradeMsg::msg_type;
-        int* id = reinterpret_cast<int*>(header + 1);
-        *id = instrument_id;
-        (*send_num)++;
-        
-        // Get symbol name
-        std::string symbol = GetSymbolName(instrument_id);
-        
-        // 记录发送时间
-        uint64_t send_time = now();
-        msg_sent_time[*send_num] = {header->msg_type, send_time};
-        
-        logger->info("发送成交数据请求 - 币对: {} (ID: {}), 请求次数: {}/{}", 
-            symbol, instrument_id, *send_num, MaxNum);
-        conn.Push();
-        msg_sent++;
-        return true;
-    }
-    
-    bool TrySendVolatilityRequest(int instrument_id) {
-        MsgHeader* header = conn.Alloc(sizeof(int));
-        if(!header) return false;
-        header->msg_type = VolatilityMsg::msg_type;
-        int* id = reinterpret_cast<int*>(header + 1);
-        *id = instrument_id;
-        (*send_num)++;
-        
-        // Get symbol name
-        std::string symbol = GetSymbolName(instrument_id);
-        
-        // 记录发送时间
-        uint64_t send_time = now();
-        msg_sent_time[*send_num] = {header->msg_type, send_time};
-        
-        logger->info("发送波动率数据请求 - 币对: {} (ID: {}), 请求次数: {}/{}", 
-            symbol, instrument_id, *send_num, MaxNum);
-        conn.Push();
-        msg_sent++;
-        return true;
-    }
-    
-    bool TrySendKLineRequest(int instrument_id) {
-        MsgHeader* header = conn.Alloc(sizeof(int));
-        if(!header) return false;
-        header->msg_type = KLineMsg::msg_type;
-        int* id = reinterpret_cast<int*>(header + 1);
-        *id = instrument_id;
-        (*send_num)++;
-        
-        // Get symbol name
-        std::string symbol = GetSymbolName(instrument_id);
-        
-        // 记录发送时间
-        uint64_t send_time = now();
-        msg_sent_time[*send_num] = {header->msg_type, send_time};
-        
-        logger->info("发送K线数据请求 - 币对: {} (ID: {}), 请求次数: {}/{}", 
-            symbol, instrument_id, *send_num, MaxNum);
-        conn.Push();
-        msg_sent++;
-        return true;
-    }
-    
-    bool TrySendTickerRequest(int instrument_id) {
-        MsgHeader* header = conn.Alloc(sizeof(int));
-        if(!header) return false;
-        header->msg_type = TickerMsg::msg_type;
-        int* id = reinterpret_cast<int*>(header + 1);
-        *id = instrument_id;
-        (*send_num)++;
-        
-        // Get symbol name
-        std::string symbol = GetSymbolName(instrument_id);
-        
-        // 记录发送时间
-        uint64_t send_time = now();
-        msg_sent_time[*send_num] = {header->msg_type, send_time};
-        
-        logger->info("发送行情数据请求 - 币对: {} (ID: {}), 请求次数: {}/{}", 
-            symbol, instrument_id, *send_num, MaxNum);
-        conn.Push();
-        msg_sent++;
-        return true;
-    }
+    // 删除所有发送请求的方法
+    // bool TrySendMarketDepthRequest(int instrument_id) { ... } 
+    // bool TrySendTradeRequest(int instrument_id) { ... }
+    // bool TrySendVolatilityRequest(int instrument_id) { ... }
+    // bool TrySendKLineRequest(int instrument_id) { ... }
+    // bool TrySendTickerRequest(int instrument_id) { ... }
 
     template<class T>
     bool TrySendMsg() {
-        MsgHeader* header = conn.Alloc(sizeof(T));
-        if(!header) return false;
-        header->msg_type = T::msg_type;
-        T* msg = reinterpret_cast<T*>(header + 1);
-        for(auto& v : msg->val) {
-            // convert to configurated network byte order, don't need this if you know server is using the same endian
-            v = Endian<ClientConf::ToLittleEndian>::Convert((*send_num)++);
-        }
-        conn.Push();
-        msg_sent++;
-        return true;
+        // 此方法已弃用，但保留以便兼容性
+        return false;
     }
 
     // 添加币对名称生成函数
@@ -602,7 +471,7 @@ private:
     }
 
 private:
-    static constexpr int MaxNum = 100;
+    static constexpr int MaxNum = 10000;
     Connection& conn;
     int msg_sent = 0;
     uint64_t start_time = 0;
